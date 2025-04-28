@@ -41,9 +41,25 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
                 frozenset(['Female', 'Old', 'LowIncome']): 2401,
                 frozenset(['Female', 'Old', 'HighIncome']): 407
             }
-            
+
+            # compute optimal reach fraction pacing
+            x = self.get_cumulative_reach(c)
+            R = c.reach
+            B = c.budget
+            # estimate cost per impression
+            k = (spent / x) if x > 0 else (B / R)
+            # solve for raw eta: eta = (b + sqrt(max(0, 2B/(kR)-1)))/a
+            raw = 0.0
+            term = 2 * B / (k * R) - 1
+            if term > 0:
+                raw = self.b + math.sqrt(term)
+            eta = raw / self.a
+            # clip eta to [eta_low, eta_high]
+            eta = min(self.eta_high, max(self.eta_low, eta))
+            # pace daily target based on eta
             duration = c.end_day - c.start_day
-            daily_target = c.reach / duration
+            # daily_target = c.reach / duration
+            daily_target = eta * R / duration
             # print(daily_target)
             
             for seg in MarketSegment.all_segments():
