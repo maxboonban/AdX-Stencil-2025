@@ -241,40 +241,69 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
 
         return bundles
 
-    def get_campaign_bids(self, campaigns_for_auction: Set[Campaign]) -> Dict[Campaign, float]:
-        bids = {}
-        # today = self.get_current_day()
+    def estimate_campaign_difficulty(self, campaign: Campaign) -> float:
+        '''
+        Method to estimate campaign difficulty score with value ~ [0,1]. 
+        This score will be used to scale bids used to auction for a campaign.
+        A campaign is harder if more other campaigns compete for the same users.
+        '''
+        active = list(self.get_active_campaigns())
+        # no difficulty if it is the only campaign
+        if len(active) <= 1:
+            return 0.0
+        overlap = 0
+        # count how many other campaigns share any subsegment
+        for ac in active:
+            if ac is campaign:
+                continue
+            if ac.target_segment & campaign.target_segment:
+                overlap += 1
+        # normalize by number of other campaigns
+        return overlap / (len(active) - 1)
 
+
+    def get_campaign_bids(self, campaigns_for_auction: Set[Campaign]) -> Dict[Campaign, float]:
+        # bids = {}
+        # # today = self.get_current_day()
+
+        # # for c in campaigns_for_auction:
+        # #     # PHASE 1: days 1–7, only bid on campaigns that end by day 7
+        # #     if today <= 7:
+        # #         if c.end_day <= 7:
+        # #             # bid at the maximum (reach R) to guarantee you win
+        # #             bids[c] = 0.1*c.reach
+        # #     # PHASE 2: days 8–10, revert to equilibrium bids for campaigns ending after 7
+        # #     else:
+        # #         if c.end_day > 7:
+        # #             bids[c] = self._best_campaign_bid(c.reach)
+        # # return bids
+        # today = self.get_current_day()
         # for c in campaigns_for_auction:
-        #     # PHASE 1: days 1–7, only bid on campaigns that end by day 7
-        #     if today <= 7:
-        #         if c.end_day <= 7:
-        #             # bid at the maximum (reach R) to guarantee you win
-        #             bids[c] = 0.1*c.reach
-        #     # PHASE 2: days 8–10, revert to equilibrium bids for campaigns ending after 7
-        #     else:
-        #         if c.end_day > 7:
-        #             bids[c] = self._best_campaign_bid(c.reach)
-        # return bids
-        today = self.get_current_day()
+        #     # DAYS 1–7: only short campaigns, bid minimum to win cheaply
+        #     # if today <= 7 and c.end_day <= 7:
+        #     #     bids[c] = 0.1 * c.reach
+        #     # # DAYS 8–10: profit phase, bid Bayes‐optimal
+        #     # elif today > 7 and c.end_day > 7:
+        #     #     seg = c.target_segment
+        #     #     cdf = self.prior_cdf.get(seg)
+        #     #     pdf = self.prior_pdf.get(seg)
+        #     #     if cdf and pdf:
+        #     #         # print(c.reach)
+        #     #         bids[c] = self.optimize_b_reverse_2nd_price(R=c.reach, cdf=cdf,pdf= pdf, m=10)
+        #     seg = c.target_segment
+        #     cdf = self.prior_cdf.get(seg)
+        #     pdf = self.prior_pdf.get(seg)
+        #     if cdf and pdf:
+        #         # print(c.reach)
+        #         bids[c] = self.optimize_b_reverse_2nd_price(R=c.reach, cdf=cdf,pdf= pdf, m=10)
+
+        # Max's implementation of campaign difficulty bidding
+        bids = {}
         for c in campaigns_for_auction:
-            # DAYS 1–7: only short campaigns, bid minimum to win cheaply
-            # if today <= 7 and c.end_day <= 7:
-            #     bids[c] = 0.1 * c.reach
-            # # DAYS 8–10: profit phase, bid Bayes‐optimal
-            # elif today > 7 and c.end_day > 7:
-            #     seg = c.target_segment
-            #     cdf = self.prior_cdf.get(seg)
-            #     pdf = self.prior_pdf.get(seg)
-            #     if cdf and pdf:
-            #         # print(c.reach)
-            #         bids[c] = self.optimize_b_reverse_2nd_price(R=c.reach, cdf=cdf,pdf= pdf, m=10)
-            seg = c.target_segment
-            cdf = self.prior_cdf.get(seg)
-            pdf = self.prior_pdf.get(seg)
-            if cdf and pdf:
-                # print(c.reach)
-                bids[c] = self.optimize_b_reverse_2nd_price(R=c.reach, cdf=cdf,pdf= pdf, m=10)
+            diff = self.estimate_campaign_difficulty(c)
+            raw  = diff * c.reach
+            bid  = self.clip_campaign_bid(c, raw)
+            bids[c] = bid
         return bids
 
     
