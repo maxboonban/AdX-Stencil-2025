@@ -173,6 +173,22 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
     #     self._campaign_bid_cache[R] = clipped
     #     return clipped
 
+    def compute_optimal_eta(self, campaign: Campaign, spent: float, done: int) -> float:
+        """
+        Compute the optimal reach fraction η* based on Section 2.2:
+        η* = (b + sqrt(max(0, 2B/(kR) - 1))) / a, clipped to [0.9, 1.3].
+        """
+        B = campaign.budget
+        R = campaign.reach
+        # sigmoid params
+        a, b = 4.08577, 3.08577
+        # cost-per-impression estimate
+        k = (spent / done) if done > 0 and spent > 0 else (B / R)
+        term = 2 * B / (k * R) - 1
+        raw = b + math.sqrt(term) if term > 0 else 0.0
+        eta = raw / a
+        return min(1.3, max(0.9, eta))
+
     def get_ad_bids(self) -> Set[BidBundle]:
         bundles = set()
         today = self.get_current_day()
@@ -180,7 +196,9 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
         for c in self.get_active_campaigns():
             spent   = self.get_cumulative_cost(c)
             done    = self.get_cumulative_reach(c)
+            # Gap to budget
             remB    = max(0.0, c.budget  - spent)
+            # Gap to reach
             remR    = max(1, c.reach   - done)
 
             # PHASE 1: days 1–7 → finish short campaigns ASAP
@@ -263,6 +281,7 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
 
 
     def get_campaign_bids(self, campaigns_for_auction: Set[Campaign]) -> Dict[Campaign, float]:
+        ##################################################### Start of METHOD 1 ##################################################
         # bids = {}
         # # today = self.get_current_day()
 
@@ -296,7 +315,9 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
         #     if cdf and pdf:
         #         # print(c.reach)
         #         bids[c] = self.optimize_b_reverse_2nd_price(R=c.reach, cdf=cdf,pdf= pdf, m=10)
+        ##################################################### End of METHOD 1 ##################################################
 
+        ##################################################### Start of METHOD 2 ##################################################
         # Max's implementation of campaign difficulty bidding
         bids = {}
         for c in campaigns_for_auction:
@@ -304,6 +325,7 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
             raw  = diff * c.reach
             bid  = self.clip_campaign_bid(c, raw)
             bids[c] = bid
+        ##################################################### End of METHOD 2 ##################################################
         return bids
 
     
