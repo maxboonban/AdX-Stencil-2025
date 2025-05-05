@@ -6,6 +6,7 @@ from typing import Set, Dict
 import numpy as np
 import random
 import bisect
+import math
 
 class EmpiricalCdf:
     def __init__(self, data: np.ndarray):
@@ -31,6 +32,9 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
         # TODO: fill this in (if necessary)
         super().__init__()
         self.name = "chillguyTest"  # TODO: enter a name.
+        self.prev_active_campaigns = set()  # For debugging purposes
+        self._last_day = None               # For debugging purposes
+
         self._campaign_bid_cache = {}
         SEG_FREQ_3 = {
         MarketSegment({'Male',   'Young',    'LowIncome'}): 1836,
@@ -65,6 +69,7 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
             MarketSegment({'Old',   'LowIncome'}): 4196,
             MarketSegment({'Old',   'HighIncome'}):1215,
         }
+
         SEG_FREQ_1 = {
             # by Gender
             MarketSegment({'Male'}):   4956,
@@ -76,6 +81,7 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
             MarketSegment({'LowIncome'}):  8012,
             MarketSegment({'HighIncome'}): 1988,
         }
+
         self.SEG_FREQ = {}
         self.SEG_FREQ.update(SEG_FREQ_1)
         self.SEG_FREQ.update(SEG_FREQ_2_GA)
@@ -84,6 +90,7 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
         self.SEG_FREQ.update(SEG_FREQ_3)
         self.prior_cdf: Dict[MarketSegment, EmpiricalCdf] = {}
         self.prior_pdf: Dict[MarketSegment, EmpiricalPdf] = {}
+        
         for seg, avg in self.SEG_FREQ.items():
             # sample many opponent effective bids
             pool = []
@@ -190,72 +197,122 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
         return min(1.3, max(0.9, eta))
 
     def get_ad_bids(self) -> Set[BidBundle]:
+        # #################################################### Start of METHOD 1 ##################################################
+        # # Debugging: Get number of campaigns won each day
+        # day = self.get_current_day()
+        # if self._last_day is None or day != self._last_day:
+        #     current = set(self.get_active_campaigns())
+        #     if self._last_day is not None:
+        #         won_yesterday = current - self.prev_active_campaigns
+        #         print(f"[Day {self._last_day}] Campaigns won: {len(won_yesterday)}")
+        #     self.prev_active_campaigns = current
+        #     self._last_day = day
+
+        # bundles = set()
+        # today = self.get_current_day()
+
+        # for c in self.get_active_campaigns():
+        #     spent   = self.get_cumulative_cost(c)
+        #     done    = self.get_cumulative_reach(c)
+        #     # Gap to budget
+        #     remB    = max(0.0, c.budget  - spent)
+        #     # Gap to reach
+        #     remR    = max(1, c.reach   - done)
+
+        #     # PHASE 1: days 1–7 → finish short campaigns ASAP
+        #     if today <= 7:
+        #         if c.end_day <= 7:
+        #             # pour all remaining budget into this campaign today
+        #             # approximate derivative of effective reach at x impressions:
+        #             rho_x   = self.effective_reach(done,   c.reach)
+        #             rho_x1  = self.effective_reach(done+1, c.reach)
+        #             marginal_value = (rho_x1 - rho_x) * c.budget
+        #             bid_per_item = min(marginal_value, remB/remR)
+        #             daily_limit  = remB
+        #             # build the "finish it today" bundle in phase 1
+        #             bid_entries = set()
+        #             total_freq  = sum(self.SEG_FREQ[s] for s in self.SEG_FREQ
+        #                             if c.target_segment.issubset(s))
+        #             for seg, freq in self.SEG_FREQ.items():
+        #                 if c.target_segment.issubset(seg):
+        #                     w   = freq / total_freq
+        #                     Ls  = daily_limit * w
+        #                     bid_per_item = bid_per_item* w
+        #                     # same high per‐item bid everywhere to exhaust budget
+        #                     bid_entries.add(Bid(self, seg,
+        #                                         bid_per_item=bid_per_item,
+        #                                         bid_limit=Ls))
+
+        #             bundles.add(BidBundle(c.uid, limit=daily_limit,
+        #                                 bid_entries=bid_entries))
+        #         else:
+        #             continue
+
+        #     # PHASE 2: days 8–10 → profit pacing (using SEG_FREQ weights)
+        #     else:
+        #         if c.end_day > 7:
+        #             days_left   = max(1, c.end_day - today + 1)
+        #             daily_limit = remB / days_left
+        #             bid_entries = set()
+        #             # weight across segments by expected supply (SEG_FREQ)
+        #             for seg, freq in self.SEG_FREQ.items():
+        #                 if c.target_segment.issubset(seg):
+        #                     # fraction of supply in seg
+        #                     total_freq = sum(self.SEG_FREQ[s] for s in self.SEG_FREQ
+        #                                     if c.target_segment.issubset(s))
+        #                     w = freq / total_freq
+        #                     Ls = daily_limit * w
+        #                     # pacing bid capped by marginal value
+        #                     rho_x  = self.effective_reach(done,   c.reach)
+        #                     rho_x1 = self.effective_reach(done+1, c.reach)
+        #                     mv   = (rho_x1 - rho_x) * c.budget
+        #                     ps = min(max(0.1, Ls / (remR * w)),mv)
+        #                     bid_entries.add(Bid(self, seg, bid_per_item=ps,
+        #                                     bid_limit=Ls))
+        #             bundles.add(BidBundle(c.uid, limit=daily_limit,
+        #                                 bid_entries=bid_entries))
+        #             continue
+        #         else:
+        #             continue
+        # #################################################### End of METHOD 1 ##################################################
+
+        ##################################################### Start of METHOD 2 ##################################################
         bundles = set()
-        today = self.get_current_day()
-
         for c in self.get_active_campaigns():
-            spent   = self.get_cumulative_cost(c)
-            done    = self.get_cumulative_reach(c)
-            # Gap to budget
-            remB    = max(0.0, c.budget  - spent)
-            # Gap to reach
-            remR    = max(1, c.reach   - done)
+            spent = self.get_cumulative_cost(c)
+            done  = self.get_cumulative_reach(c)
+            # compute optimal reach fraction and per-day target
+            eta          = self.compute_optimal_eta(c, spent, done)
+            duration     = max(1, c.end_day - c.start_day + 1)
+            daily_target = eta * c.reach / duration
 
-            # PHASE 1: days 1–7 → finish short campaigns ASAP
-            if today <= 7:
-                if c.end_day <= 7:
-                    # pour all remaining budget into this campaign today
-                    # approximate derivative of effective reach at x impressions:
-                    rho_x   = self.effective_reach(done,   c.reach)
-                    rho_x1  = self.effective_reach(done+1, c.reach)
-                    marginal_value = (rho_x1 - rho_x) * c.budget
-                    bid_per_item = min(marginal_value, remB/remR)
-                    daily_limit  = remB
-                    # build the "finish it today" bundle in phase 1
-                    bid_entries = set()
-                    total_freq  = sum(self.SEG_FREQ[s] for s in self.SEG_FREQ
-                                    if c.target_segment.issubset(s))
-                    for seg, freq in self.SEG_FREQ.items():
-                        if c.target_segment.issubset(seg):
-                            w   = freq / total_freq
-                            Ls  = daily_limit * w
-                            bid_per_item = bid_per_item* w
-                            # same high per‐item bid everywhere to exhaust budget
-                            bid_entries.add(Bid(self, seg,
-                                                bid_per_item=bid_per_item,
-                                                bid_limit=Ls))
+            # marginal value for the next impression
+            rho_x   = self.effective_reach(done,   c.reach)
+            rho_x1  = self.effective_reach(done+1, c.reach)
+            mv      = (rho_x1 - rho_x) * c.budget
 
-                    bundles.add(BidBundle(c.uid, limit=daily_limit,
-                                        bid_entries=bid_entries))
-                else:
-                    continue
+            # per-item bid capped by both target and marginal value
+            bid_per_item = min(daily_target, mv)
+            # total number of impressions to win today
+            daily_limit  = daily_target
 
-            # PHASE 2: days 8–10 → profit pacing (using SEG_FREQ weights)
-            else:
-                if c.end_day > 7:
-                    days_left   = max(1, c.end_day - today + 1)
-                    daily_limit = remB / days_left
-                    bid_entries = set()
-                    # weight across segments by expected supply (SEG_FREQ)
-                    for seg, freq in self.SEG_FREQ.items():
-                        if c.target_segment.issubset(seg):
-                            # fraction of supply in seg
-                            total_freq = sum(self.SEG_FREQ[s] for s in self.SEG_FREQ
-                                            if c.target_segment.issubset(s))
-                            w = freq / total_freq
-                            Ls = daily_limit * w
-                            # pacing bid capped by marginal value
-                            rho_x  = self.effective_reach(done,   c.reach)
-                            rho_x1 = self.effective_reach(done+1, c.reach)
-                            mv   = (rho_x1 - rho_x) * c.budget
-                            ps = min(max(0.1, Ls / (remR * w)),mv)
-                            bid_entries.add(Bid(self, seg, bid_per_item=ps,
-                                            bid_limit=Ls))
-                    bundles.add(BidBundle(c.uid, limit=daily_limit,
-                                        bid_entries=bid_entries))
-                    continue
-                else:
-                    continue
+            # split across sub-segments by expected supply
+            bid_entries = set()
+            total_freq  = sum(freq for seg, freq in self.SEG_FREQ.items()
+                              if c.target_segment.issubset(seg))
+            for seg, freq in self.SEG_FREQ.items():
+                if c.target_segment.issubset(seg):
+                    w = freq / total_freq
+                    bid_entries.add(Bid(
+                        bidder=self,
+                        auction_item=seg,
+                        bid_per_item=bid_per_item * w,
+                        bid_limit=daily_limit * w
+                    ))
+            bundles.add(BidBundle(campaign_id=c.uid,
+                                  limit=daily_limit,
+                                  bid_entries=bid_entries))
+        ##################################################### End of METHOD 2 ##################################################
 
         return bundles
 
@@ -281,7 +338,7 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
 
 
     def get_campaign_bids(self, campaigns_for_auction: Set[Campaign]) -> Dict[Campaign, float]:
-        ##################################################### Start of METHOD 1 ##################################################
+        # #################################################### Start of METHOD 1 ##################################################
         # bids = {}
         # # today = self.get_current_day()
 
@@ -315,7 +372,7 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
         #     if cdf and pdf:
         #         # print(c.reach)
         #         bids[c] = self.optimize_b_reverse_2nd_price(R=c.reach, cdf=cdf,pdf= pdf, m=10)
-        ##################################################### End of METHOD 1 ##################################################
+        # #################################################### End of METHOD 1 ##################################################
 
         ##################################################### Start of METHOD 2 ##################################################
         # Max's implementation of campaign difficulty bidding
