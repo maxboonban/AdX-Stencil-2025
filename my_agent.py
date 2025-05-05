@@ -5,10 +5,10 @@ from agt_server.agents.utils.adx.structures import Bid, Campaign, BidBundle, Mar
 from typing import Set, Dict
 import numpy as np
 
-from my_agent_smart_prev import MyNDaysNCampaignsAgent as chillguytest
-from exp_agent import MyNDaysNCampaignsAgent as exp_agent
-chillguytest = chillguytest()
-exp_agent = exp_agent()
+# from my_agent_smart_prev import MyNDaysNCampaignsAgent as chillguytest
+# from exp_agent import MyNDaysNCampaignsAgent as exp_agent
+# chillguytest = chillguytest()
+# exp_agent = exp_agent()
 
 SEG_FREQ = {
     MarketSegment({'Male','Young','LowIncome'}): 1836,
@@ -61,11 +61,19 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
         #storing a list of campaigns currently ongoing 
         self.known_campaigns: list[(int, Campaign)] = []
         self.competitiveness = INITIAL_COMPETITIVENESS
+        # Add counters for campaign statistics
+        self.total_reach = 0
+        self.total_duration = 0
+        self.campaign_count = 0
 
     def on_new_game(self) -> None:
         # TODO: fill this in (if necessary)
         self.competitiveness = INITIAL_COMPETITIVENESS
         self.known_campaigns.clear()
+        # Reset campaign statistics
+        self.total_reach = 0
+        self.total_duration = 0
+        self.campaign_count = 0
     
     def _cleanup_known(self, today: int):
         self.known_campaigns = [ (d,c) for (d,c) in self.known_campaigns if d >= today ]
@@ -145,6 +153,7 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
             # Bhat = 0.51 * (c.budget - spent)
             if done/R >= eta_star:
                 Bhat = 0.01 * (c.budget - spent)
+            # Remaining budget divided by remaining reach
             bid_per_item = Bhat / remR
 
             # segment-weighted bids
@@ -161,12 +170,18 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
 
     def get_campaign_bids(self, campaigns_for_auction:  Set[Campaign]) -> Dict[Campaign, float]:
         # TODO: fill this in 
+        ######################################################### Current Implementation #########################################################
         bids = {}
         today = self.get_current_day()
         # remove the campaigns that end today from the known campaign list
         self._cleanup_known(today)
         # TODO: add today's free campaign
         for c in campaigns_for_auction:
+            # Collect campaign statistics
+            self.total_reach += c.reach
+            self.total_duration += (c.end_day - c.start_day + 1)
+            self.campaign_count += 1
+            
             if today <= 1:
                 # quality phase: win cheaply longer campaigns so as to increase quality score by satifying them
                 bids[c] = 0.1 * c.reach
@@ -179,7 +194,84 @@ class MyNDaysNCampaignsAgent(NDaysNCampaignsAgent):
                 bids[c] = max(0.1*c.reach, min(raw, c.reach))
                 self._add_known(c)
         return bids
+        ######################################################### Current Implementation #########################################################
 
+        # ######################################################### New Implementation #########################################################
+        # bids = {}
+        # today = self.get_current_day()
+        # # remove the campaigns that end today from the known campaign list
+        # self._cleanup_known(today)
+        # # ----- constants / priors you may wish to tune -----
+        # SUPPLY_PER_SEG = {s: f / 10.0           # 10‑day horizon → per‑day supply
+        #                   for s, f in ALL_SEG_FREQ.items()}
+        # TOTAL_POP      = sum(ALL_SEG_FREQ.values())
+
+        # avg_Q_rivals   = 0.8                    # crude guess
+        # free_per_day   = 9 * avg_Q_rivals       # 9 rivals may each get a free campaign
+        # mean_reach     = 1000                   # rough mean of reach distribution
+        # mean_len       = 2                      # rough mean duration
+        # free_demand_pd = mean_reach / mean_len  # ≈500 impressions per free campaign per day
+
+        # # helper: pre‑compute known daily demand in each segment j
+        # known_daily_demand = {s: 0.0 for s in ALL_SEG_FREQ}
+        # for ac in self.get_active_campaigns():
+        #     remR       = ac.reach - self.get_cumulative_reach(ac)
+        #     if remR <= 0:
+        #         continue
+        #     days_left = max(1, ac.end_day - today + 1)
+        #     demand_pd = remR / days_left
+        #     for seg in known_daily_demand:
+        #         if ac.target_segment.issubset(seg):
+        #             known_daily_demand[seg] += demand_pd
+
+        # # main loop – compute difficulty & bid for each auctioned campaign
+        # for c in campaigns_for_auction:
+        #     # Skip campaigns that start and end on the same day
+        #     if c.start_day == c.end_day:
+        #         continue
+
+        #     # daily demand this *candidate* would add if we win it
+        #     duration_c     = c.end_day - c.start_day + 1
+        #     demand_c_pd    = c.reach / duration_c
+
+        #     # difficulty score D = worst ( demand / supply ) among matching segments
+        #     D_max = 0.0
+        #     for seg in ALL_SEG_FREQ:
+        #         if not c.target_segment.issubset(seg):
+        #             continue
+
+        #         supply   = SUPPLY_PER_SEG[seg]
+
+        #         # known demand already queued for seg
+        #         known    = known_daily_demand[seg]
+
+        #         # expected unknown demand for seg
+        #         prob_seg = ALL_SEG_FREQ[seg] / TOTAL_POP    # probability a random campaign contains seg
+        #         unknown  = free_per_day * free_demand_pd * prob_seg
+
+        #         total_dem = known + unknown + demand_c_pd
+        #         D_seg     = total_dem / supply
+        #         D_max     = max(D_max, D_seg)
+
+        #     # convert difficulty into a budget request
+        #     if D_max > 1.8:               # very crowded → either avoid or ask high
+        #         bid_budget = 0.1 * c.reach
+        #     elif D_max > 1.3:             # moderate difficulty
+        #         bid_budget = 0.5 * c.reach * self.competitiveness
+        #     else:                         # easy
+        #         bid_budget = 0.8 * c.reach * self.competitiveness
+
+        #     # always keep within [0.1R, R]
+        #     bid_budget = self.clip_campaign_bid(c, bid_budget)
+        #     bids[c]    = bid_budget
+
+        #     # remember the campaign for future known‑demand calculations
+        #     self._add_known(c)
+
+        # return bids
+        # ######################################################### New Implementation #########################################################
+        
+        
 if __name__ == "__main__":
     # Here's an opportunity to test offline against some TA agents. Just run this file to do so.
     test_agents = [MyNDaysNCampaignsAgent()] + [Tier1NDaysNCampaignsAgent(name=f"Agent {i + 1}") for i in range(9)] 
@@ -187,7 +279,16 @@ if __name__ == "__main__":
     # Don't change this. Adapt initialization to your environment
     simulator = AdXGameSimulator()
     simulator.run_simulation(agents=test_agents, num_simulations=5)
-
+    
+    # Print campaign statistics
+    my_agent = test_agents[0]
+    if my_agent.campaign_count > 0:
+        mean_reach = my_agent.total_reach / my_agent.campaign_count
+        mean_duration = my_agent.total_duration / my_agent.campaign_count
+        print("\nCampaign Statistics:")
+        print(f"Total campaigns: {my_agent.campaign_count}")
+        print(f"Mean reach per campaign: {mean_reach:.2f}")
+        print(f"Mean duration per campaign: {mean_duration:.2f} days")
 
 # def score_campaign(self,c):
 #         R = c.reach
